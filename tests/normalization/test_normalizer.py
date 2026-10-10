@@ -1,4 +1,4 @@
-
+from backend.normalization.models import ContentBlock, normalize_blocks
 import pytest
 
 from backend.normalization.normalizer import normalize_input
@@ -97,3 +97,85 @@ def test_normalization_is_idempotent():
     second = normalize_input(first.normalized_text)
 
     assert second.normalized_text == first.normalized_text
+
+
+
+def test_normalizes_multiple_content_sources_independently():
+    blocks = [
+        ContentBlock(source="user", content="  Hello   world  "),
+        ContentBlock(source="retrieved", content="Document   text"),
+        ContentBlock(source="tool", content="  Tool output  "),
+    ]
+
+    result = normalize_blocks(blocks)
+
+    assert result.blocks[0].source == "user"
+    assert result.blocks[0].content == "Hello world"
+    assert result.blocks[1].source == "retrieved"
+    assert result.blocks[1].content == "Document text"
+    assert result.blocks[2].source == "tool"
+    assert result.blocks[2].content == "Tool output"
+
+
+def test_preserves_original_text_for_each_block():
+    blocks = [
+        ContentBlock(source="user", content="  Hello  "),
+        ContentBlock(source="retrieved", content="Document"),
+    ]
+
+    result = normalize_blocks(blocks)
+
+    assert result.results[0].original_text == "  Hello  "
+    assert result.results[1].original_text == "Document"
+
+
+def test_rejects_empty_block_list():
+    with pytest.raises(ValueError, match="At least one"):
+        normalize_blocks([])
+
+
+def test_rejects_non_content_block():
+    with pytest.raises(TypeError, match="ContentBlock"):
+        normalize_blocks(["hello"])
+
+
+def test_rejects_invalid_source():
+    block = ContentBlock(source="unknown", content="hello")
+
+    with pytest.raises(ValueError, match="Unsupported content source"):
+        normalize_blocks([block])
+
+
+def test_enforces_per_block_size_limit():
+    block = ContentBlock(source="user", content="abcdef")
+
+    with pytest.raises(ValueError, match="character limit"):
+        normalize_blocks([block], max_block_length=5)
+
+
+def test_enforces_combined_size_limit():
+    blocks = [
+        ContentBlock(source="user", content="hello"),
+        ContentBlock(source="tool", content="world"),
+    ]
+
+    with pytest.raises(ValueError, match="Combined input exceeds"):
+        normalize_blocks(blocks, max_total_length=8)
+
+
+def test_rejects_empty_block_content():
+    block = ContentBlock(source="user", content="   ")
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        normalize_blocks([block])
+
+
+def test_preserves_system_source_label():
+    blocks = [
+        ContentBlock(source="system", content="Follow application policy."),
+    ]
+
+    result = normalize_blocks(blocks)
+
+    assert result.blocks[0].source == "system"
+    assert result.blocks[0].content == "Follow application policy."
