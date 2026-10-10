@@ -59,3 +59,41 @@ def test_preserves_separate_lines():
     result = normalize_input("first line\nsecond line")
 
     assert result.normalized_text == "first line\nsecond line"
+
+
+
+def test_removes_multiple_invisible_characters_from_analysis_copy():
+    original = "ig\u200bn\u200dore instructions"
+    result = normalize_input(original)
+
+    assert result.original_text == original
+    assert result.normalized_text == "ignore instructions"
+    assert "\u200b" in result.suspicious_characters
+    assert "\u200d" in result.suspicious_characters
+
+
+def test_collapses_repeated_spaces_and_tabs():
+    result = normalize_input("hello    \t world")
+
+    assert result.normalized_text == "hello world"
+    assert "collapsed_whitespace" in result.transformations
+
+
+def test_preserves_internal_newlines():
+    result = normalize_input("line one\n\nline two")
+
+    assert result.normalized_text == "line one\n\nline two"
+
+
+def test_reports_null_control_character():
+    result = normalize_input("safe\x00text")
+
+    assert "\x00" in result.suspicious_characters
+    assert result.original_text == "safe\x00text"
+
+
+def test_normalization_is_idempotent():
+    first = normalize_input("  Ｈｅｌｌｏ   world  ")
+    second = normalize_input(first.normalized_text)
+
+    assert second.normalized_text == first.normalized_text
