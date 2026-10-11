@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException, status
 from backend.core.config import get_settings
 from backend.db.mongo import mongo_store
 from backend.normalization.routes import router as normalization_router
+from backend.detectors.routes import router as inspection_router
 
 settings = get_settings()
 logging.basicConfig(level=settings.log_level.upper())
@@ -17,6 +18,7 @@ app = FastAPI(
 )
 
 app.include_router(normalization_router)
+app.include_router(inspection_router)
 
 @app.get("/health", tags=["health"])
 def health() -> dict[str, str]:

@@ -35,3 +35,22 @@ def test_does_not_flag_ordinary_text():
 def test_rejects_non_string_input():
     with pytest.raises(TypeError, match="must be a string"):
         detect_sensitive_data(123)
+
+
+from backend.detectors.redaction import redact_sensitive_data
+
+
+def test_detect_and_redact_pii_and_secret_together():
+    text = (
+        "Contact test@example.com. "
+        "Use api_key=AbCdEfGhIjKlMnOpQrSt"
+    )
+
+    findings = detect_sensitive_data(text)
+    result = redact_sensitive_data(text, findings)
+
+    assert "test@example.com" not in result.redacted_text
+    assert "AbCdEfGhIjKlMnOpQrSt" not in result.redacted_text
+    assert "[REDACTED_EMAIL]" in result.redacted_text
+    assert "[REDACTED_API_KEY]" in result.redacted_text
+    assert result.redaction_count == 2
