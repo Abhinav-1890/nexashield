@@ -6,11 +6,6 @@
 
 ---
 
-## 🚧 Project Status
-
-This project is in its **initial / planning stage**. Literature survey and research gap identification are complete. Implementation has not yet started — the current focus is **data collection** for the ML components described below.
-
----
 
 ## Overview
 
