@@ -9,20 +9,35 @@ from pydantic import BaseModel, Field
 from backend.detectors.findings import SecurityFinding
 from backend.detectors.pipeline import detect_all
 from backend.detectors.redaction import redact_sensitive_data
-from backend.normalization.models import ContentBlock, normalize_blocks
+from backend.normalization.models import (
+    ContentBlock,
+    normalize_blocks,
+)
+
 
 router = APIRouter(tags=["inspection"])
 
-ContentSource = Literal["system", "user", "retrieved", "tool"]
+ContentSource = Literal[
+    "system",
+    "user",
+    "retrieved",
+    "tool",
+]
 
 
 class InspectBlockRequest(BaseModel):
     source: ContentSource
-    content: str = Field(min_length=1, max_length=20_000)
+    content: str = Field(
+        min_length=1,
+        max_length=20_000,
+    )
 
 
 class InspectRequest(BaseModel):
-    blocks: list[InspectBlockRequest] = Field(min_length=1, max_length=50)
+    blocks: list[InspectBlockRequest] = Field(
+        min_length=1,
+        max_length=50,
+    )
 
 
 class FindingResponse(BaseModel):
@@ -31,9 +46,11 @@ class FindingResponse(BaseModel):
     start: int
     end: int
     detector: str
+
     rule_id: str | None = None
     injection_category: str | None = None
     evidence: str | None = None
+    confidence: float | None = None
 
 
 class InspectBlockResponse(BaseModel):
@@ -58,35 +75,49 @@ class InspectResponse(BaseModel):
     response_model=InspectResponse,
     status_code=status.HTTP_200_OK,
 )
-def inspect_endpoint(request: InspectRequest) -> InspectResponse:
+def inspect_endpoint(
+    request: InspectRequest,
+) -> InspectResponse:
     """Normalize input, detect security findings, and redact sensitive data."""
 
-    total_length = sum(len(block.content) for block in request.blocks)
+    total_length = sum(
+        len(block.content)
+        for block in request.blocks
+    )
 
     if total_length > 50_000:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail="Combined input exceeds the 50000-character limit.",
+            detail=(
+                "Combined input exceeds the "
+                "50000-character limit."
+            ),
         )
 
     blocks = [
-        ContentBlock(source=block.source, content=block.content)
+        ContentBlock(
+            source=block.source,
+            content=block.content,
+        )
         for block in request.blocks
     ]
 
     try:
+        # Normalize input blocks
         normalized = normalize_blocks(blocks)
 
         inspected_blocks = []
 
         for block in normalized.blocks:
+
+            # Run all detection layers
             findings: list[SecurityFinding] = detect_all(
                 block.content,
                 source=block.source,
             )
 
-            # Report prompt injections without redacting their text.
-            # Continue redacting PII and secrets.
+            # Prompt-injection findings are reported but not redacted.
+            # PII and secrets continue to be redacted.
             redaction_findings = [
                 finding
                 for finding in findings
@@ -112,6 +143,7 @@ def inspect_endpoint(request: InspectRequest) -> InspectResponse:
                             rule_id=finding.rule_id,
                             injection_category=finding.injection_category,
                             evidence=finding.evidence,
+                            confidence=finding.confidence,
                         )
                         for finding in findings
                     ],
@@ -125,12 +157,20 @@ def inspect_endpoint(request: InspectRequest) -> InspectResponse:
             detail=str(exc),
         ) from exc
 
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
     return InspectResponse(
         blocks=inspected_blocks,
         metadata=[
             InspectMetadataResponse(
                 transformations=list(result.transformations),
-                suspicious_characters=list(result.suspicious_characters),
+                suspicious_characters=list(
+                    result.suspicious_characters
+                ),
             )
             for result in normalized.results
         ],
