@@ -15,3 +15,5 @@ data/processed/*
 
 # Pretrained classifier download cache
 backend/classifier/artifacts/.cache/
+# Wolf Defender model weights (download separately)
+backend/classifier/artifacts/wolf_defender/

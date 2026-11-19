@@ -104,6 +104,47 @@ All models are chosen to be CPU/cloud-friendly (no GPU dependency), given projec
 
 ---
 
+
+## Wolf Defender Model Setup
+
+NexaShield uses the pretrained
+`patronus-studio/wolf-defender-prompt-injection-small`
+model as an additional semantic prompt-injection detection layer.
+
+### Install dependencies
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### Download model files
+
+Download the pinned model revision into the expected local directory:
+
+```powershell
+.\.venv\Scripts\python.exe -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='patronus-studio/wolf-defender-prompt-injection-small', revision='2484cc9a13550aa4f2c29b577ff3ef331dc6ba07', local_dir='backend/classifier/artifacts/wolf_defender')"
+```
+
+The model files are intentionally excluded from Git because of their size.
+Each environment must download the model before using semantic detection.
+
+### Configure threshold
+
+Add this setting to your local `.env` if you want to override the default:
+
+```env
+NEXASHIELD_WOLF_THRESHOLD=0.15
+```
+
+The threshold must be between `0.0` and `1.0`.
+
+### Run tests
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+
 ## Roadmap
 
 - [x] Literature survey (IEEE conference papers, 2025–present)
