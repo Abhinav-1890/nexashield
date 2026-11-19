@@ -1,5 +1,5 @@
 
-"""Secure LLM gateway routes for NexaShield."""
+"""Secure LLM gateway with input/output verification and audit logging."""
 
 import logging
 from typing import Any
@@ -7,6 +7,11 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
+from backend.audit.models import create_audit_event
+from backend.audit.service import (
+    AuditPersistenceError,
+    record_audit_event,
+)
 from backend.detectors.routes import (
     InspectBlockRequest,
     InspectRequest,
@@ -24,10 +29,7 @@ router = APIRouter(
 
 
 class GatewayRequest(BaseModel):
-    content: str = Field(
-        min_length=1,
-        max_length=20_000,
-    )
+    content: str = Field(min_length=1, max_length=20_000)
 
 
 class GatewayResponse(BaseModel):
@@ -45,15 +47,34 @@ class GatewayResponse(BaseModel):
     output_findings: list[dict[str, Any]]
 
 
+def _audit_gateway_event(**kwargs: Any) -> None:
+    """Persist a gateway event and enforce required audit mode."""
+
+    try:
+        event = create_audit_event(
+            event_type="gateway",
+            source="llm_gateway",
+            **kwargs,
+        )
+        record_audit_event(event)
+
+    except AuditPersistenceError as exc:
+        logger.exception("Required gateway audit failed")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Required audit persistence failed.",
+        ) from exc
+
+
 @router.post(
     "/chat",
     response_model=GatewayResponse,
     status_code=status.HTTP_200_OK,
 )
 def gateway_chat(request: GatewayRequest) -> GatewayResponse:
-    """Inspect input, generate a response, verify output, then return it."""
+    """Inspect input, generate, verify output, audit and return."""
 
-    # 1. Inspect the incoming prompt.
+    # 1. Inspect incoming prompt.
     try:
         inspection = inspect_endpoint(
             InspectRequest(
@@ -80,25 +101,51 @@ def gateway_chat(request: GatewayRequest) -> GatewayResponse:
             detail="Security inspection returned no result.",
         )
 
+    request_id = inspection.request_id
     inspected = inspection.blocks[0]
 
-    # 2. Fail closed if an input detector is unavailable.
+    common_audit = {
+        "request_id": request_id,
+        "provider": None,
+        "model": None,
+        "input_risk_score": inspected.risk.score,
+        "input_risk_level": inspected.risk.level,
+        "policy_action": inspected.policy.action,
+        "input_sanitized": (
+            inspected.redacted_content != request.content
+            or inspected.policy.action == "sanitize"
+        ),
+        "findings": [
+            finding.model_dump()
+            for finding in inspected.findings
+        ],
+        "unavailable_detectors": inspection.unavailable_detectors,
+    }
+
+    # 2. Fail closed if any required input detector is unavailable.
     if inspection.unavailable_detectors:
+        _audit_gateway_event(
+            **common_audit,
+            status="failed",
+            failure_code="input_detector_unavailable",
+        )
+
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
-                "message": (
-                    "Required input security detectors are unavailable. "
-                    "Request was not forwarded."
-                ),
-                "unavailable_detectors": (
-                    inspection.unavailable_detectors
-                ),
+                "message": "Required input security detectors are unavailable.",
+                "unavailable_detectors": inspection.unavailable_detectors,
             },
         )
 
     # 3. Enforce input policy.
     if inspected.policy.action == "block":
+        _audit_gateway_event(
+            **common_audit,
+            status="blocked",
+            failure_code="input_policy_block",
+        )
+
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
@@ -109,39 +156,63 @@ def gateway_chat(request: GatewayRequest) -> GatewayResponse:
             },
         )
 
-    # 4. Forward only inspected and redacted input.
     forwarded_prompt = inspected.redacted_content
+    sanitized = common_audit["input_sanitized"]
 
-    sanitized = (
-        forwarded_prompt != request.content
-        or inspected.policy.action == "sanitize"
-    )
-
-    # 5. Resolve the provider after input security checks.
+    # 4. Resolve provider only after security checks.
     try:
         provider = get_llm_provider()
     except RuntimeError as exc:
         logger.exception("LLM provider configuration failed")
+
+        _audit_gateway_event(
+            **common_audit,
+            status="failed",
+            failure_code="provider_configuration_failed",
+        )
+
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="LLM provider is not available.",
         ) from exc
 
-    # 6. Generate the response.
+    # 5. Generate response.
     try:
         response_text = provider.generate(forwarded_prompt)
     except Exception as exc:
         logger.exception("LLM provider request failed")
+
+        _audit_gateway_event(
+            **{
+                **common_audit,
+                "provider": provider.name,
+                "model": provider.model,
+            },
+            status="failed",
+            failure_code="provider_request_failed",
+        )
+
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="The configured LLM provider request failed.",
         ) from exc
 
-    # 7. Verify generated output before returning it.
+    # 6. Verify output before returning it.
     try:
         output = verify_output(response_text)
     except Exception as exc:
         logger.exception("LLM output verification failed")
+
+        _audit_gateway_event(
+            **{
+                **common_audit,
+                "provider": provider.name,
+                "model": provider.model,
+            },
+            status="failed",
+            failure_code="output_verification_failed",
+        )
+
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=(
@@ -150,7 +221,28 @@ def gateway_chat(request: GatewayRequest) -> GatewayResponse:
             ),
         ) from exc
 
-    # 8. Return only verified and sanitized output.
+    output_findings = [
+        finding.__dict__
+        for finding in output.findings
+    ]
+
+    # 7. Record the verified gateway transaction.
+    _audit_gateway_event(
+        **{
+            **common_audit,
+            "provider": provider.name,
+            "model": provider.model,
+            "output_risk_score": output.risk_score,
+            "output_risk_level": output.risk_level,
+            "output_sanitized": output.sanitized,
+            "findings": (
+                common_audit["findings"] + output_findings
+            ),
+        },
+        status="success",
+    )
+
+    # 8. Return only verified output.
     return GatewayResponse(
         response=output.content,
         provider=provider.name,
@@ -166,8 +258,5 @@ def gateway_chat(request: GatewayRequest) -> GatewayResponse:
         output_risk_score=output.risk_score,
         output_risk_level=output.risk_level,
         output_sanitized=output.sanitized,
-        output_findings=[
-            finding.__dict__
-            for finding in output.findings
-        ],
+        output_findings=output_findings,
     )

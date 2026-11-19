@@ -2,10 +2,13 @@
 """FastAPI route for NexaShield security inspection."""
 
 from typing import Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
+from backend.audit.models import create_audit_event
+from backend.audit.service import record_audit_event
 from backend.detectors.findings import SecurityFinding
 from backend.detectors.pipeline import detect_all_with_status
 from backend.detectors.redaction import redact_sensitive_data
@@ -69,6 +72,7 @@ class InspectResponse(BaseModel):
     blocks: list[InspectBlockResponse]
     metadata: list[InspectMetadataResponse]
     unavailable_detectors: list[str] = Field(default_factory=list)
+    request_id: str
 
 
 @router.post(
@@ -77,7 +81,9 @@ class InspectResponse(BaseModel):
     status_code=status.HTTP_200_OK,
 )
 def inspect_endpoint(request: InspectRequest) -> InspectResponse:
-    """Normalize, inspect, score risk, enforce policy, and redact."""
+    """Normalize, inspect, score risk, enforce policy, redact and audit."""
+
+    request_id = uuid4().hex
 
     total_length = sum(
         len(block.content)
@@ -103,10 +109,13 @@ def inspect_endpoint(request: InspectRequest) -> InspectResponse:
     try:
         normalized = normalize_blocks(blocks)
         inspected_blocks = []
+        audit_findings = []
+        audit_scores = []
+        audit_levels = []
+        audit_actions = []
+        audit_sanitized = False
 
         for block in normalized.blocks:
-
-            # Run all available security detectors.
             findings, block_unavailable = detect_all_with_status(
                 block.content,
                 source=block.source,
@@ -114,14 +123,9 @@ def inspect_endpoint(request: InspectRequest) -> InspectResponse:
 
             unavailable_detectors.update(block_unavailable)
 
-            # Calculate normalized LARVA risk score (0.0–1.0).
             risk = calculate_risk(findings)
-
-            # Apply LARVA policy thresholds.
             policy = enforce_policy(risk)
 
-            # Redact sensitive information only.
-            # Prompt-injection findings are reported, not redacted.
             redaction_findings = [
                 finding
                 for finding in findings
@@ -138,6 +142,14 @@ def inspect_endpoint(request: InspectRequest) -> InspectResponse:
             redaction = redact_sensitive_data(
                 block.content,
                 redaction_findings,
+            )
+
+            audit_findings.extend(findings)
+            audit_scores.append(risk.score)
+            audit_levels.append(risk.level)
+            audit_actions.append(policy.action)
+            audit_sanitized = (
+                audit_sanitized or redaction.redaction_count > 0
             )
 
             inspected_blocks.append(
@@ -171,6 +183,31 @@ def inspect_endpoint(request: InspectRequest) -> InspectResponse:
                 )
             )
 
+        overall_action = (
+            "block" if "block" in audit_actions
+            else "sanitize" if "sanitize" in audit_actions
+            else "allow"
+        )
+
+        event = create_audit_event(
+            event_type="inspection",
+            status="success",
+            request_id=request_id,
+            source="inspection_api",
+            input_risk_score=max(audit_scores, default=0.0),
+            input_risk_level=(
+                "high" if "high" in audit_levels
+                else "medium" if "medium" in audit_levels
+                else "low"
+            ),
+            policy_action=overall_action,
+            input_sanitized=audit_sanitized,
+            findings=audit_findings,
+            unavailable_detectors=sorted(unavailable_detectors),
+        )
+
+        record_audit_event(event)
+
     except (TypeError, ValueError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -180,7 +217,7 @@ def inspect_endpoint(request: InspectRequest) -> InspectResponse:
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
+            detail="Inspection or required audit persistence failed.",
         ) from exc
 
     return InspectResponse(
@@ -193,4 +230,5 @@ def inspect_endpoint(request: InspectRequest) -> InspectResponse:
             for result in normalized.results
         ],
         unavailable_detectors=sorted(unavailable_detectors),
+        request_id=request_id,
     )
