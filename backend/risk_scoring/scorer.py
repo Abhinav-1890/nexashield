@@ -20,14 +20,11 @@ class SafetyAssessment:
 
 @dataclass(frozen=True)
 class RiskAssessment:
-    """Normalized risk assessment."""
-
     score: float
     level: RiskLevel
     factors: tuple[str, ...]
 
 
-# Contributions are normalized to the range 0.0–1.0.
 SEVERITY_WEIGHTS = {
     "low": 0.42,
     "medium": 0.50,
@@ -38,6 +35,7 @@ SEVERITY_WEIGHTS = {
 INJECTION_MINIMUM_SCORE = 0.75
 UNSAFE_SAFETY_SCORE = 0.80
 CORROBORATION_BONUS = 0.05
+NOVELTY_CONTRIBUTION = 0.10
 
 
 def _merge_overlapping_findings(
@@ -54,7 +52,6 @@ def _merge_overlapping_findings(
 
     for category, items in grouped.items():
         items.sort(key=lambda item: (item.start, item.end))
-
         current = None
 
         for finding in items:
@@ -80,7 +77,6 @@ def _merge_overlapping_findings(
                 current["detectors"].add(finding.detector)
             else:
                 merged.append(current)
-
                 current = {
                     "category": category,
                     "start": finding.start,
@@ -106,15 +102,16 @@ def calculate_risk(
     findings: list[SecurityFinding],
     safety_assessment: SafetyAssessment | None = None,
 ) -> RiskAssessment:
-    """Calculate an explainable normalized LARVA risk score."""
+    """Calculate a normalized, explainable LARVA risk score."""
 
-    factors: list[str] = []
     contributions: list[float] = []
+    factors: list[str] = []
 
-    merged_findings = _merge_overlapping_findings(findings)
-
-    for finding in merged_findings:
-        contribution = SEVERITY_WEIGHTS[finding["severity"]]
+    for finding in _merge_overlapping_findings(findings):
+        if finding["category"] == "novelty":
+            contribution = NOVELTY_CONTRIBUTION
+        else:
+            contribution = SEVERITY_WEIGHTS[finding["severity"]]
 
         if finding["category"] == "prompt_injection":
             contribution = max(
@@ -156,7 +153,6 @@ def calculate_risk(
                 + (f" ({categories})" if categories else "")
             )
 
-    # Combine independent signals without exceeding 1.0.
     remaining_risk = 1.0
 
     for contribution in contributions:

@@ -13,6 +13,7 @@ FindingCategory = Literal[
     "password",
     "secret",
     "prompt_injection",
+    "novelty",
 ]
 
 Severity = Literal[

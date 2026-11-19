@@ -9,12 +9,14 @@ from backend.detectors.findings import SecurityFinding
 from backend.detectors.injection_detector import detect_injection
 from backend.detectors.pii_detector import detect_pii
 from backend.detectors.secret_detector import detect_secrets
+from backend.novelty.detector import detect_novelty
 
 logger = logging.getLogger("nexashield.pipeline")
 
 
 def detect_sensitive_data(text: str) -> list[SecurityFinding]:
     """Run PII and secret detectors only."""
+
     if not isinstance(text, str):
         raise TypeError("Input must be a string.")
 
@@ -30,7 +32,7 @@ def detect_all_with_status(
     text: str,
     source: str = "user",
 ) -> tuple[list[SecurityFinding], list[str]]:
-    """Run detectors and report any unavailable optional layers."""
+    """Run detectors and report unavailable optional layers."""
 
     if not isinstance(text, str):
         raise TypeError("Input must be a string.")
@@ -38,7 +40,10 @@ def detect_all_with_status(
     pii_findings = detect_pii(text)
     secret_findings = detect_secrets(text)
 
-    rule_findings = detect_injection(text, source=source)
+    rule_findings = detect_injection(
+        text,
+        source=source,
+    )
 
     if any(
         finding.category == "prompt_injection"
@@ -49,15 +54,20 @@ def detect_all_with_status(
         rf_findings = detect_ml_injection(text)
 
     unavailable_detectors: list[str] = []
-    wolf_findings: list[SecurityFinding] = []
 
     try:
         wolf_findings = detect_wolf_injection(text)
     except RuntimeError:
-        logger.exception(
-            "Wolf Defender unavailable; continuing with other detectors."
-        )
+        logger.exception("Wolf Defender unavailable.")
+        wolf_findings = []
         unavailable_detectors.append("wolf_defender")
+
+    try:
+        novelty_findings = detect_novelty(text)
+    except (RuntimeError, ValueError):
+        logger.exception("MiniLM novelty detector unavailable.")
+        novelty_findings = []
+        unavailable_detectors.append("semantic_novelty")
 
     findings = (
         pii_findings
@@ -65,6 +75,7 @@ def detect_all_with_status(
         + rule_findings
         + rf_findings
         + wolf_findings
+        + novelty_findings
     )
 
     findings.sort(
@@ -85,5 +96,6 @@ def detect_all(
     source: str = "user",
 ) -> list[SecurityFinding]:
     """Run all available detectors and return findings."""
+
     findings, _ = detect_all_with_status(text, source)
     return findings

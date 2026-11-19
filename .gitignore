@@ -17,3 +17,6 @@ data/processed/*
 backend/classifier/artifacts/.cache/
 # Wolf Defender model weights (download separately)
 backend/classifier/artifacts/wolf_defender/
+
+# Downloaded semantic novelty model
+backend/novelty/artifacts/

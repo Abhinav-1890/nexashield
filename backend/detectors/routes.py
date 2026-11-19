@@ -125,7 +125,14 @@ def inspect_endpoint(request: InspectRequest) -> InspectResponse:
             redaction_findings = [
                 finding
                 for finding in findings
-                if finding.category != "prompt_injection"
+                if finding.category in {
+                    "email",
+                    "phone",
+                    "api_key",
+                    "access_token",
+                    "password",
+                    "secret",
+                }
             ]
 
             redaction = redact_sensitive_data(
