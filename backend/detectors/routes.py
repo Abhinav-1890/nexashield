@@ -80,7 +80,11 @@ class InspectResponse(BaseModel):
     response_model=InspectResponse,
     status_code=status.HTTP_200_OK,
 )
-def inspect_endpoint(request: InspectRequest) -> InspectResponse:
+def inspect_endpoint(
+    request: InspectRequest,
+    *,
+    persist_audit: bool = True,
+) -> InspectResponse:
     """Normalize, inspect, score risk, enforce policy, redact and audit."""
 
     request_id = uuid4().hex
@@ -206,7 +210,8 @@ def inspect_endpoint(request: InspectRequest) -> InspectResponse:
             unavailable_detectors=sorted(unavailable_detectors),
         )
 
-        record_audit_event(event)
+        if persist_audit:
+            record_audit_event(event)
 
     except (TypeError, ValueError) as exc:
         raise HTTPException(

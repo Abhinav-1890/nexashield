@@ -20,3 +20,8 @@ backend/classifier/artifacts/wolf_defender/
 
 # Downloaded semantic novelty model
 backend/novelty/artifacts/
+
+# Frontend dependencies and generated files
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo

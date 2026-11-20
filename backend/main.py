@@ -8,6 +8,7 @@ from backend.db.mongo import mongo_store
 from backend.normalization.routes import router as normalization_router
 from backend.detectors.routes import router as inspection_router
 from backend.gateway.routes import router as gateway_router
+from backend.dashboard.routes import router as dashboard_router
 
 settings = get_settings()
 
@@ -26,6 +27,7 @@ app = FastAPI(
 app.include_router(normalization_router)
 app.include_router(inspection_router)
 app.include_router(gateway_router)
+app.include_router(dashboard_router)
 
 
 @app.get("/health", tags=["health"])
